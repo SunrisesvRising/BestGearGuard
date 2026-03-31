@@ -15,7 +15,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Only the best of the best")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a1b1724f2754d9a04c10f3f882770aa8f779c8d9")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d7d29b842a1338e40caa13bab9756f788c53c573")]
 [assembly: System.Reflection.AssemblyProductAttribute("BestGearGuard")]
 [assembly: System.Reflection.AssemblyTitleAttribute("BestGearGuard")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

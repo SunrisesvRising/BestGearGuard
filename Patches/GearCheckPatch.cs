@@ -1,4 +1,4 @@
-using HarmonyLib;
+﻿using HarmonyLib;
 using ProjectM;
 using ProjectM.Network;
 using ProjectM.Gameplay.Systems;
@@ -7,6 +7,7 @@ using Unity.Entities;
 using BestGearGuard;
 using BestGearGuard.Services;
 using BestGearGuard.Utils;
+using Stunlock.Network;
 
 namespace BestGearGuard.Patches
 {
@@ -15,58 +16,112 @@ namespace BestGearGuard.Patches
     {
         private static readonly System.Collections.Generic.HashSet<ulong> _warned = new();
 
-        // Triggered when armor pieces are equipped/changed
+        // ── EntityQuery cache ────────────────────────────────────────────────
+        // FIX #1 : on ne recrée plus la query à chaque frame.
+        // Elle est initialisée une seule fois au premier appel et réutilisée.
+        private static EntityQuery _userQuery;
+        private static bool _queryInitialized = false;
+
+        private static EntityQuery GetUserQuery(EntityManager em)
+        {
+            if (!_queryInitialized)
+            {
+                _userQuery = em.CreateEntityQuery(ComponentType.ReadOnly<User>());
+                _queryInitialized = true;
+            }
+            return _userQuery;
+        }
+
+        // ── Gear equip patches ───────────────────────────────────────────────
+
         [HarmonyPatch(typeof(ArmorLevelSystem_Spawn), nameof(ArmorLevelSystem_Spawn.OnUpdate))]
         [HarmonyPostfix]
         public static void ArmorPostfix(ArmorLevelSystem_Spawn __instance)
             => CheckAllPlayers(__instance.EntityManager);
 
-        // Triggered when weapon is equipped/changed
         [HarmonyPatch(typeof(WeaponLevelSystem_Spawn), nameof(WeaponLevelSystem_Spawn.OnUpdate))]
         [HarmonyPostfix]
         public static void WeaponPostfix(WeaponLevelSystem_Spawn __instance)
             => CheckAllPlayers(__instance.EntityManager);
 
-        // Triggered when amulet (magic source) is equipped/changed
+        // FIX #2 : SpellLevelSystem_Spawn n'expose pas EntityManager directement.
+        // On passe par VWorld.Server (null-checked) plutôt que Core.EntityManager.
         [HarmonyPatch(typeof(SpellLevelSystem_Spawn), nameof(SpellLevelSystem_Spawn.OnUpdate))]
         [HarmonyPostfix]
         public static void SpellPostfix()
-            => CheckAllPlayers(Core.EntityManager);
+        {
+            var server = VWorld.Server;
+            if (server == null) return;
+            CheckAllPlayers(server.EntityManager);
+        }
 
-        // Triggered when any item is equipped from inventory (drag & drop)
         [HarmonyPatch(typeof(EquipItemFromInventorySystem), nameof(EquipItemFromInventorySystem.OnUpdate))]
         [HarmonyPostfix]
         public static void EquipFromInventoryPostfix(EquipItemFromInventorySystem __instance)
             => CheckAllPlayers(__instance.EntityManager);
 
-        // Triggered when any item is equipped via shortcut (right-click)
         [HarmonyPatch(typeof(EquipItemSystem), nameof(EquipItemSystem.OnUpdate))]
         [HarmonyPostfix]
         public static void EquipPostfix(EquipItemSystem __instance)
             => CheckAllPlayers(__instance.EntityManager);
 
-        // Triggered when items are moved/transferred between inventories (right-click from chest/bag)
         [HarmonyPatch(typeof(MoveItemBetweenInventoriesSystem), nameof(MoveItemBetweenInventoriesSystem.OnUpdate))]
         [HarmonyPostfix]
         public static void MoveItemPostfix(MoveItemBetweenInventoriesSystem __instance)
             => CheckAllPlayers(__instance.EntityManager);
 
-        // Triggered when any item is unequipped
         [HarmonyPatch(typeof(UnEquipItemSystem), nameof(UnEquipItemSystem.OnUpdate))]
         [HarmonyPostfix]
         public static void UnEquipPostfix(UnEquipItemSystem __instance)
             => CheckAllPlayers(__instance.EntityManager);
 
+        // FIX #3 : nettoyage du HashSet _warned à la déconnexion d'un joueur,
+        // pour qu'il reçoive bien l'avertissement à sa prochaine connexion.
+        [HarmonyPatch(typeof(ServerBootstrapSystem), nameof(ServerBootstrapSystem.OnUserDisconnected))]
+        [HarmonyPostfix]
+        public static void OnUserDisconnected(ServerBootstrapSystem __instance, NetConnectionId netConnectionId)
+        {
+            try
+            {
+                var em = __instance.EntityManager;
+                var userEntities = GetUserQuery(em).ToEntityArray(Allocator.Temp);
+                try
+                {
+                    foreach (var ue in userEntities)
+                    {
+                        if (!em.HasComponent<User>(ue)) continue;
+                        var u = em.GetComponentData<User>(ue);
+                        if (!u.IsConnected)
+                        {
+                            _warned.Remove(u.PlatformId);
+                        }
+                    }
+                }
+                finally
+                {
+                    userEntities.Dispose();
+                }
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Logger.LogWarning($"[GearCheckPatch] OnUserDisconnected cleanup error: {e.Message}");
+            }
+        }
+
+        // ── Core check ───────────────────────────────────────────────────────
+
         private static void CheckAllPlayers(EntityManager em)
         {
             if (!GearGuardSettings.Enabled.Value) return;
 
-            var userEntities = em.CreateEntityQuery(ComponentType.ReadOnly<User>())
-                                 .ToEntityArray(Allocator.Temp);
+            // FIX #1 : réutilise la query mise en cache
+            var userEntities = GetUserQuery(em).ToEntityArray(Allocator.Temp);
             try
             {
                 foreach (var userEntity in userEntities)
                 {
+                    if (!em.Exists(userEntity) || !em.HasComponent<User>(userEntity)) continue;
+
                     var user = em.GetComponentData<User>(userEntity);
                     if (!user.IsConnected) continue;
 
